@@ -274,7 +274,7 @@
 </div>
 
 <script>
-    // ⚠️ 請在這裡填入你原本 Firebase 的真實設定！
+    // ⚠️ 記得確保這裡填入的是你 Firebase 的真實設定
     const firebaseConfig = {
         apiKey: "AIzaSyDn6HtjYMz_FFKU9xjhvV1xXYPr7t36UU0",
         authDomain: "little-nook-aad58.firebaseapp.com",
@@ -289,7 +289,7 @@
     const auth = firebase.auth();
     const db = firebase.database();
 
-    // 獨立市場資料庫路徑
+    // 獨立市場資料庫路徑 (避免與原本系統衝突)
     const PATH_INV = 'market_inventory';
     const PATH_ORD = 'market_orders';
     const PATH_OFFLINE = 'market_pendingOrder_';
@@ -299,6 +299,9 @@
     const ADMIN_PW = "0209";
     let pendingMove = null;
     let html5QrcodeScanner = null;
+    
+    // 全域音效引擎變數
+    let audioCtx = null;
 
     auth.onAuthStateChanged(user => {
         const authOverlay = document.getElementById('auth-overlay');
@@ -370,18 +373,18 @@
 
     // 成功音效 (高音)
     function playBeep() {
-        const ctx = new (window.AudioContext || window.webkitAudioContext)();
-        const osc = ctx.createOscillator();
-        osc.type = 'sine'; osc.frequency.setValueAtTime(880, ctx.currentTime);
-        osc.connect(ctx.destination); osc.start(); osc.stop(ctx.currentTime + 0.1);
+        if (!audioCtx) return;
+        const osc = audioCtx.createOscillator();
+        osc.type = 'sine'; osc.frequency.setValueAtTime(880, audioCtx.currentTime);
+        osc.connect(audioCtx.destination); osc.start(); osc.stop(audioCtx.currentTime + 0.1);
     }
 
     // 失敗音效 (低音/警告音)
     function playErrorBeep() {
-        const ctx = new (window.AudioContext || window.webkitAudioContext)();
-        const osc = ctx.createOscillator();
-        osc.type = 'sawtooth'; osc.frequency.setValueAtTime(150, ctx.currentTime);
-        osc.connect(ctx.destination); osc.start(); osc.stop(ctx.currentTime + 0.3);
+        if (!audioCtx) return;
+        const osc = audioCtx.createOscillator();
+        osc.type = 'sawtooth'; osc.frequency.setValueAtTime(150, audioCtx.currentTime);
+        osc.connect(audioCtx.destination); osc.start(); osc.stop(audioCtx.currentTime + 0.3);
     }
 
     function handleScannedCode(scannedId) {
@@ -401,15 +404,33 @@
     }
 
     function startScanner() {
+        // 解鎖瀏覽器音效限制
+        if (!audioCtx) {
+            audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        }
+        if (audioCtx.state === 'suspended') {
+            audioCtx.resume(); 
+        }
+
         document.getElementById('scanner-modal').style.display = 'flex';
         html5QrcodeScanner = new Html5Qrcode("reader");
-        const config = { fps: 10, qrbox: { width: 250, height: 250 } };
+        
+        // 專為 QR Code 與平板優化的相機設定
+        const config = { 
+            fps: 15, 
+            qrbox: (videoWidth, videoHeight) => {
+                const minEdge = Math.min(videoWidth, videoHeight);
+                return { width: minEdge * 0.7, height: minEdge * 0.7 };
+            },
+            aspectRatio: 1.0,
+            disableFlip: false 
+        };
         
         html5QrcodeScanner.start({ facingMode: "environment" }, config, 
             (decodedText, decodedResult) => {
-                // 相機掃描連續模式：不關閉相機，直接連續加購物車
+                // 連續掃描模式，失敗會發出警告音
                 if(!handleScannedCode(decodedText)) {
-                    playErrorBeep(); // 找不到就發出錯誤音
+                    playErrorBeep(); 
                 }
             },
             (errorMessage) => {}
@@ -531,7 +552,7 @@
     function toggleAdmin() { document.getElementById('admin-panel').style.display = (document.getElementById('admin-panel').style.display==='flex'?'none':'flex'); if(document.getElementById('admin-panel').style.display==='flex') renderAdminTable(); }
     function toggleHistory() { document.getElementById('history-panel').style.display = (document.getElementById('history-panel').style.display==='flex'?'none':'flex'); }
 
-    // 【修復】後台搜尋不會再當機，並能正確搜尋到代碼與品名
+    // 修復後台搜尋功能 (能搜尋 Input 內的值)
     function searchAdminTable() {
         const keyword = document.getElementById('admin-search-input').value.toLowerCase().trim();
         const tbody = document.getElementById('admin-tbody');
@@ -548,7 +569,6 @@
                 hasVisible = false; 
                 row.style.display = ''; 
             } else {
-                // 抓取每一列裡面的 input 數值來進行比對，而不是只抓外層文字
                 const inputs = row.querySelectorAll('input[type="text"]');
                 let rowText = "";
                 inputs.forEach(inp => rowText += inp.value.toLowerCase() + " ");
@@ -683,7 +703,7 @@
         });
     }
 
-    // 【修復】新增分類的下拉選單問題
+    // 修正分類下拉選單無法選擇新增的問題
     function checkNewCat(v) { 
         if(v === "ADD") { 
             const n = prompt("請輸入新分類名稱："); 
@@ -810,7 +830,7 @@
         alert(`成功同步 ${count} 筆訂單！`);
     }
 
-    // 【修復】超市級別的全自動無縫連續掃描邏輯
+    // 處理實體掃描槍與一般輸入鍵盤事件
     document.addEventListener('keydown', function(e) {
         if (!document.body.classList.contains('unlocked')) return;
         
@@ -842,11 +862,9 @@
                 const matched = handleScannedCode(scannedStr); 
                 
                 if(matched) {
-                    // 掃碼成功：清空框框，強制讓游標留在框框內，準備掃下一個！
                     sb.value = ''; 
                     sb.focus();
                 } else {
-                    // 掃碼失敗 (找不到或沒庫存)：發出錯誤音，清空，繼續留著游標！不用按任何螢幕確認！
                     playErrorBeep();
                     sb.value = '';
                     sb.focus();
@@ -855,7 +873,6 @@
             } return;
         }
         
-        // 全域攔截：只要你不是在打備註或是新增商品，按任何英數字都會自動鎖定回搜尋/掃碼框
         if (document.activeElement.tagName !== 'INPUT' && document.activeElement.tagName !== 'SELECT') {
             if (e.key.length === 1 && !e.ctrlKey && !e.altKey && !e.metaKey) {
                 document.getElementById('quick-find').focus();
