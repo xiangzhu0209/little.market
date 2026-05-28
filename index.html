@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>🧸 市場版 POS (獨立資料庫)</title>
+    <title>🧸 市場版 POS (極速掃碼版)</title>
     <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-app.js"></script>
     <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-auth.js"></script>
     <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-database.js"></script>
@@ -248,12 +248,12 @@
     </div>
     
     <div class="add-row-top">
-        <div><label>分類</label><select id="select-cat" onchange="checkNewCat(this.value)" style="width:130px;"></select></div>
+        <div><label>分類</label><select id="select-cat" onchange="checkNewCat(this.value)" style="width:180px;"></select></div>
         <div><label>代碼</label><input type="text" id="new-id" style="width:120px;" placeholder="代碼(即條碼)"></div>
-        <div><label>品名</label><input type="text" id="new-n" style="width:400px;" placeholder="完整品名"></div>
-        <div><label>成本</label><input type="number" id="new-c" style="width:120px;" placeholder="成本"></div>
-        <div><label>售價</label><input type="number" id="new-p" style="width:120px;" placeholder="售價"></div>
-        <div><label>庫存</label><input type="number" id="new-s" style="width:120px;" placeholder="數量"></div>
+        <div><label>品名</label><input type="text" id="new-n" style="width:300px;" placeholder="完整品名"></div>
+        <div><label>成本</label><input type="number" id="new-c" style="width:90px;" placeholder="成本"></div>
+        <div><label>售價</label><input type="number" id="new-p" style="width:90px;" placeholder="售價"></div>
+        <div><label>庫存</label><input type="number" id="new-s" style="width:90px;" placeholder="數量"></div>
         <button onclick="addNewProduct()" style="background:var(--profit-green); color:white; border:none; padding:10px 25px; border-radius:8px; font-weight:bold; cursor:pointer;">➕ 新增商品</button>
     </div>
 
@@ -289,7 +289,7 @@
     const auth = firebase.auth();
     const db = firebase.database();
 
-    // 定義市場專屬資料庫路徑 (這就是作法二的核心！)
+    // 獨立市場資料庫路徑
     const PATH_INV = 'market_inventory';
     const PATH_ORD = 'market_orders';
     const PATH_OFFLINE = 'market_pendingOrder_';
@@ -333,12 +333,10 @@
     inactivityTime();
 
     function startSystem() {
-        // 改讀取 market_inventory
         db.ref(PATH_INV).on('value', snap => { 
             inv = snap.val() || []; 
             initUI(); 
         });
-        // 改讀取 market_orders
         db.ref(PATH_ORD).on('value', snap => {
             const data = snap.val();
             orders = data ? Object.keys(data).map(k => ({...data[k], firebaseKey: k})).reverse() : [];
@@ -370,11 +368,20 @@
         if(document.getElementById('admin-panel').style.display === 'flex') { renderAdminTable(); searchAdminTable(); }
     }
 
+    // 成功音效 (高音)
     function playBeep() {
         const ctx = new (window.AudioContext || window.webkitAudioContext)();
         const osc = ctx.createOscillator();
         osc.type = 'sine'; osc.frequency.setValueAtTime(880, ctx.currentTime);
         osc.connect(ctx.destination); osc.start(); osc.stop(ctx.currentTime + 0.1);
+    }
+
+    // 失敗音效 (低音/警告音)
+    function playErrorBeep() {
+        const ctx = new (window.AudioContext || window.webkitAudioContext)();
+        const osc = ctx.createOscillator();
+        osc.type = 'sawtooth'; osc.frequency.setValueAtTime(150, ctx.currentTime);
+        osc.connect(ctx.destination); osc.start(); osc.stop(ctx.currentTime + 0.3);
     }
 
     function handleScannedCode(scannedId) {
@@ -400,10 +407,9 @@
         
         html5QrcodeScanner.start({ facingMode: "environment" }, config, 
             (decodedText, decodedResult) => {
-                if(handleScannedCode(decodedText)) {
-                    // stopScanner(); 
-                } else {
-                    alert(`找不到條碼為 ${decodedText} 的商品，或已無庫存`);
+                // 相機掃描連續模式：不關閉相機，直接連續加購物車
+                if(!handleScannedCode(decodedText)) {
+                    playErrorBeep(); // 找不到就發出錯誤音
                 }
             },
             (errorMessage) => {}
@@ -497,7 +503,6 @@
         
         cart.forEach(item => { inv.forEach(c => (c.items || []).forEach(i => { if(i.id === item.id) i.s--; })); });
         
-        // 改寫入 PATH_ORD 和 PATH_INV
         db.ref(PATH_ORD).push(orderData).then(() => db.ref(PATH_INV).set(inv)).then(() => {
             document.getElementById('modal-change-amt').innerText = "$" + changeAmt;
             const modal = document.getElementById('checkout-success-modal');
@@ -526,21 +531,40 @@
     function toggleAdmin() { document.getElementById('admin-panel').style.display = (document.getElementById('admin-panel').style.display==='flex'?'none':'flex'); if(document.getElementById('admin-panel').style.display==='flex') renderAdminTable(); }
     function toggleHistory() { document.getElementById('history-panel').style.display = (document.getElementById('history-panel').style.display==='flex'?'none':'flex'); }
 
+    // 【修復】後台搜尋不會再當機，並能正確搜尋到代碼與品名
     function searchAdminTable() {
         const keyword = document.getElementById('admin-search-input').value.toLowerCase().trim();
         const tbody = document.getElementById('admin-tbody');
+        if (!tbody) return;
+        
         const rows = Array.from(tbody.querySelectorAll('tr'));
-        let currentCatRow = null; let hasVisible = false;
+        let currentCatRow = null; 
+        let hasVisible = false;
+        
         rows.forEach(row => {
             if (row.id.startsWith('ac')) {
                 if (currentCatRow && !hasVisible && keyword !== "") currentCatRow.style.display = 'none';
-                currentCatRow = row; hasVisible = false; row.style.display = '';
+                currentCatRow = row; 
+                hasVisible = false; 
+                row.style.display = ''; 
             } else {
-                const text = row.innerText.toLowerCase();
-                if (text.includes(keyword)) { row.style.display = ''; hasVisible = true; } else row.style.display = 'none';
+                // 抓取每一列裡面的 input 數值來進行比對，而不是只抓外層文字
+                const inputs = row.querySelectorAll('input[type="text"]');
+                let rowText = "";
+                inputs.forEach(inp => rowText += inp.value.toLowerCase() + " ");
+                
+                if (keyword === "" || rowText.includes(keyword)) { 
+                    row.style.display = ''; 
+                    hasVisible = true; 
+                } else { 
+                    row.style.display = 'none'; 
+                }
             }
         });
-        if (currentCatRow && !hasVisible && keyword !== "") currentCatRow.style.display = 'none';
+        
+        if (currentCatRow && !hasVisible && keyword !== "") {
+            currentCatRow.style.display = 'none';
+        }
     }
 
     function renderAdminTable() {
@@ -555,11 +579,11 @@
                 const lowStock = it.s <= 3 ? "color:red; font-weight:bold; background:#fff0f0;" : "";
                 html += `<tr data-ci="${ci}" data-ii="${ii}">
                     <td><input type="checkbox" class="admin-check" data-id="${it.id}"></td>
-                    <td><input type="text" value="${it.id || ''}" onchange="editItem(${ci},${ii},'id',this.value)" onclick="this.select()" style="width:50px;"></td>
-                    <td><input type="text" value="${it.n}" onchange="editItem(${ci},${ii},'n',this.value)" onclick="this.select()"></td>
-                    <td><input type="number" value="${it.c}" onchange="editItem(${ci},${ii},'c',this.value)" onclick="this.select()" style="width:50px;"></td>
-                    <td><input type="number" value="${it.p}" onchange="editItem(${ci},${ii},'p',this.value)" onclick="this.select()" style="width:50px;"></td>
-                    <td><input type="number" value="${it.s}" onchange="editItem(${ci},${ii},'s',this.value)" onclick="this.select()" style="width:50px; ${lowStock}"></td>
+                    <td><input type="text" value="${it.id || ''}" onchange="editItem(${ci},${ii},'id',this.value)" style="width:100px;"></td>
+                    <td><input type="text" value="${it.n}" onchange="editItem(${ci},${ii},'n',this.value)"></td>
+                    <td><input type="number" value="${it.c}" onchange="editItem(${ci},${ii},'c',this.value)" style="width:60px;"></td>
+                    <td><input type="number" value="${it.p}" onchange="editItem(${ci},${ii},'p',this.value)" style="width:60px;"></td>
+                    <td><input type="number" value="${it.s}" onchange="editItem(${ci},${ii},'s',this.value)" style="width:60px; ${lowStock}"></td>
                     <td>
                         <span onclick="copyP(${ci},${ii})" style="cursor:pointer; margin-right:10px;" title="複製">📋</span>
                         <span onclick="changeItemCat(${ci},${ii})" style="cursor:pointer; margin-right:10px;" title="更換分類">📂</span>
@@ -659,15 +683,34 @@
         });
     }
 
-    function checkNewCat(v) { if(v==="ADD") { const n = prompt("新分類名稱："); if(n){ inv.push({cat:n, items:[]}); db.ref(PATH_INV).set(inv).then(() => updateCatSelect()); } } }
+    // 【修復】新增分類的下拉選單問題
+    function checkNewCat(v) { 
+        if(v === "ADD") { 
+            const n = prompt("請輸入新分類名稱："); 
+            if(n) { 
+                inv.push({cat: n, items: []}); 
+                db.ref(PATH_INV).set(inv).then(() => {
+                    initUI(); 
+                    document.getElementById('select-cat').value = n; 
+                }); 
+            } else {
+                updateCatSelect(); 
+            }
+        } 
+    }
     
     function updateCatSelect() { 
         const sel = document.getElementById('select-cat'); 
         if(sel) { 
             const currentVal = sel.value; 
-            sel.innerHTML = inv.map(c => `<option value="${c.cat}">${c.cat}</option>`).join('') + `<option value="ADD">➕ 新增分類</option>`; 
-            if(currentVal && inv.find(c => c.cat === currentVal)) {
+            sel.innerHTML = `<option value="" disabled selected>-- 選擇或新增分類 --</option>` + 
+                            inv.map(c => `<option value="${c.cat}">${c.cat}</option>`).join('') + 
+                            `<option value="ADD">➕ 新增分類</option>`; 
+            
+            if(currentVal && currentVal !== "ADD" && inv.find(c => c.cat === currentVal)) {
                 sel.value = currentVal; 
+            } else {
+                sel.value = "";
             }
         } 
     }
@@ -767,6 +810,7 @@
         alert(`成功同步 ${count} 筆訂單！`);
     }
 
+    // 【修復】超市級別的全自動無縫連續掃描邏輯
     document.addEventListener('keydown', function(e) {
         if (!document.body.classList.contains('unlocked')) return;
         
@@ -798,16 +842,25 @@
                 const matched = handleScannedCode(scannedStr); 
                 
                 if(matched) {
+                    // 掃碼成功：清空框框，強制讓游標留在框框內，準備掃下一個！
                     sb.value = ''; 
+                    sb.focus();
                 } else {
-                    sb.blur(); initUI(); 
+                    // 掃碼失敗 (找不到或沒庫存)：發出錯誤音，清空，繼續留著游標！不用按任何螢幕確認！
+                    playErrorBeep();
+                    sb.value = '';
+                    sb.focus();
                 }
                 e.preventDefault(); 
             } return;
         }
         
-        if (e.target.tagName === 'INPUT' && aid !== 'quick-find' && aid !== 'admin-search-input') return;
-        if (((e.key >= '0' && e.key <= '9') || (e.key >= 'a' && e.key <= 'z')) && document.activeElement.tagName !== 'INPUT') { document.getElementById('quick-find').focus(); }
+        // 全域攔截：只要你不是在打備註或是新增商品，按任何英數字都會自動鎖定回搜尋/掃碼框
+        if (document.activeElement.tagName !== 'INPUT' && document.activeElement.tagName !== 'SELECT') {
+            if (e.key.length === 1 && !e.ctrlKey && !e.altKey && !e.metaKey) {
+                document.getElementById('quick-find').focus();
+            }
+        }
     });
 
     function doSearch() {
@@ -824,7 +877,7 @@
                 }
             });
         });
-        if (!found) html += `<div style="padding:20px; color:#999;">找不到商品... (如為條碼請按 Enter 結帳)</div>`;
+        if (!found) html += `<div style="padding:20px; color:#999;">找不到商品... (如果是實體掃描槍請等待，或者該商品已無庫存)</div>`;
         area.innerHTML = html + '</div>';
     }
 </script>
